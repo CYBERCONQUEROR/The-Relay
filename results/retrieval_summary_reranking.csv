@@ -1,0 +1,3 @@
+setting,total_queries,hit_at_1_percent,hit_at_3_percent,hit_at_5_percent,mrr_percent,page_hit_at_5_percent,avg_retrieval_ms,p50_retrieval_ms,p95_retrieval_ms
+R4,15,100.0,100.0,100.0,100.0,86.67,25.218,24.697,29.993
+R5,15,100.0,100.0,100.0,100.0,86.67,5311.988,3262.473,12771.123

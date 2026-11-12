@@ -1,0 +1,7 @@
+query,expected_paper,expected_pages
+How does self-attention work in the Transformer?,attention_is_all_you_need_v7.pdf,3;5;13;2
+How does the Transformer decoder prevent access to future tokens?,attention_is_all_you_need_v7.pdf,28;11;3;38
+How does Moshi support real-time dialogue?,moshi_v1.pdf,1;2;30;6;3
+What is the role of the speech-text model in Moshi?,moshi_v1.pdf,5;59;6;19;35
+What is dynamic chunking?,dynamic_chunking_v2.pdf,6;3;5;33;14
+How does hierarchical sequence modeling work?,dynamic_chunking_v2.pdf,16;21;22;4

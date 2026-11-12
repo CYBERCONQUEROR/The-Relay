@@ -1,0 +1,6 @@
+scenario,total_requests,successful,rate_limited,timeouts,errors,success_rate_percent,all_attempts_p50_ms,all_attempts_p95_ms,success_p50_ms,success_p95_ms,success_p99_ms,mean_success_ms,successful_tokens_in,successful_tokens_out
+burst,30,30,0,0,0,100.0,950.05,1562.44,950.05,1562.44,1610.52,979.57,300,3000
+daily_budget_exhausted,15,9,6,0,0,60.0,54.92,58.56,55.26,59.06,59.6,56.14,90,900
+rpm_halved,510,500,10,0,0,98.04,258.51,269.55,258.64,269.58,275.5,248.05,5000,500
+steady,20,20,0,0,0,100.0,296.19,347.4,296.19,347.4,347.45,307.76,200,2000
+sustained_overload,100,54,46,0,0,54.0,278.5,1012.52,601.16,1184.73,1406.89,645.48,540,5400

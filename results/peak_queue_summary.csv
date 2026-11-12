@@ -1,0 +1,6 @@
+scenario,peak_queue_length,total_queue_rejections,active_requests_at_capture,queued_requests_at_capture
+steady,1,0,0,0
+burst,20,0,0,0
+sustained_overload,10,0,0,0
+rpm_halved,20,109,0,0
+daily_budget_exhausted,1,0,0,0

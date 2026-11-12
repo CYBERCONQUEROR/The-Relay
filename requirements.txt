@@ -1,0 +1,12 @@
+
+groq
+python-dotenv
+fastapi
+uvicorn[standard]
+pymupdf
+sentence-transformers
+faiss-cpu
+numpy
+pandas
+httpx
+scikit-learn
