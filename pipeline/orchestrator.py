@@ -4,7 +4,8 @@ import re
 
 from dotenv import load_dotenv
 
-from retrieval.retriever import PaperRetriever
+from reliability.telemetry import emit
+from threading import Lock
 from pipeline.query_analyzer import analyze_query
 from pipeline.answer_generator import generate_answer
 from pipeline.answer_verifier import verify_answer
@@ -17,13 +18,24 @@ RETRIEVAL_SETTING = os.getenv("RETRIEVAL_SETTING", "R4").upper()
 CANDIDATE_K = int(os.getenv("RETRIEVAL_CANDIDATE_K", "50"))
 MIN_SCORE = float(os.getenv("MIN_RETRIEVAL_SCORE", "0.25"))
 
-retriever = PaperRetriever()
+retriever = None
+_retriever_lock = Lock()
 
 
-def _api_error_result(error, stage, start_time, totals):
+def get_retriever():
+    global retriever
+    with _retriever_lock:
+        if retriever is None:
+            from retrieval.retriever import PaperRetriever
+            retriever = PaperRetriever()
+    return retriever
+
+
+def _api_error_result(error, stage, start_time, totals, configuration=None):
     """Return a structured failure without treating an API outage as refusal."""
     total_ms = (time.perf_counter() - start_time) * 1000
     details = getattr(error, "details", {}) or {}
+    configuration = configuration or {}
 
     return {
         "status": "api_error",
@@ -49,16 +61,23 @@ def _api_error_result(error, stage, start_time, totals):
             "total_tokens": totals["tokens_in"] + totals["tokens_out"],
             "retries": totals["correction_retries"],
             "api_retries": totals["api_retries"],
+            "api_attempts": totals["api_attempts"],
             "generation_ms": totals["generation_ms"],
             "verification_ms": totals["verification_ms"],
-            "retrieval_setting": RETRIEVAL_SETTING,
-            "retrieval_top_k": TOP_K,
-            "candidate_k": CANDIDATE_K,
+            "retrieval_setting": configuration.get("setting", RETRIEVAL_SETTING),
+            "retrieval_top_k": configuration.get("top_k", TOP_K),
+            "candidate_k": configuration.get("candidate_k", CANDIDATE_K),
         },
     }
 
 
-def run_pipeline(question):
+def run_pipeline(question, configuration=None):
+    # Snapshot settings per job; direct evaluation callers retain env defaults.
+    configuration = configuration or {}
+    TOP_K = int(configuration.get("top_k", globals()["TOP_K"]))
+    RETRIEVAL_SETTING = configuration.get("setting", globals()["RETRIEVAL_SETTING"])
+    CANDIDATE_K = int(configuration.get("candidate_k", globals()["CANDIDATE_K"]))
+    MIN_SCORE = float(configuration.get("min_score", globals()["MIN_SCORE"]))
     start_time = time.perf_counter()
 
     totals = {
@@ -68,10 +87,13 @@ def run_pipeline(question):
         "verification_ms": 0.0,
         "correction_retries": 0,
         "api_retries": 0,
+        "api_attempts": 0,
     }
 
     # STEP 1: Analyze the question
+    emit("query_analysis", "running")
     analysis = analyze_query(question)
+    emit("query_analysis", valid=analysis["valid"], classification=analysis.get("intent"), reason=analysis.get("reason"))
 
     if not analysis["valid"]:
         return {
@@ -84,14 +106,19 @@ def run_pipeline(question):
     question = analysis["question"]
 
     # STEP 2: Retrieve relevant passages
-    passages = retriever.search(
+    emit("retrieval", "running", setting=RETRIEVAL_SETTING)
+    retrieval_start = time.perf_counter()
+    passages = get_retriever().search(
         question,
         top_k=TOP_K,
         setting=RETRIEVAL_SETTING,
         candidate_k=CANDIDATE_K,
     )
 
+    emit("retrieval", duration_ms=(time.perf_counter()-retrieval_start)*1000, passages=passages, setting=RETRIEVAL_SETTING)
+    emit("evidence_check", "running")
     if not passages:
+        emit("evidence_check", decision="refused", reason="No relevant passages")
         return {
             "status": "refused_correctly",
             "answer": (
@@ -111,6 +138,7 @@ def run_pipeline(question):
     best_score = max(p["score"] for p in passages)
 
     # STEP 3: Retrieval confidence branch
+    emit("evidence_check", decision="accepted" if best_score >= MIN_SCORE else "refused", best_score=best_score, threshold=MIN_SCORE)
     if best_score < MIN_SCORE:
         return {
             "status": "refused_correctly",
@@ -138,6 +166,7 @@ def run_pipeline(question):
     last_candidate = ""
 
     for attempt in range(2):
+        emit("generation", "running", correction_attempt=attempt)
         generation_start = time.perf_counter()
 
         try:
@@ -149,13 +178,18 @@ def run_pipeline(question):
         except GroqRequestError as error:
             totals["generation_ms"] += (time.perf_counter() - generation_start) * 1000
             totals["api_retries"] += getattr(error, "retry_count", 0)
-            return _api_error_result(error, "generation", start_time, totals)
+            totals["api_attempts"] += getattr(error, "attempts", 1)
+            emit("generation", "failed", category=error.category, duration_ms=(time.perf_counter()-generation_start)*1000)
+            return _api_error_result(error, "generation", start_time, totals, configuration)
 
         totals["generation_ms"] += (time.perf_counter() - generation_start) * 1000
         totals["tokens_in"] += generation.get("tokens_in", 0)
         totals["tokens_out"] += generation.get("tokens_out", 0)
         totals["api_retries"] += generation.get("api_retries", 0)
+        totals["api_attempts"] += generation.get("api_attempts", 1)
 
+        emit("generation", duration_ms=(time.perf_counter()-generation_start)*1000,
+             tokens_in=generation.get("tokens_in"), tokens_out=generation.get("tokens_out"), model=generation.get("model"))
         candidate = generation.get("content", "").strip()
 
         if not candidate:
@@ -173,6 +207,7 @@ def run_pipeline(question):
                     "total_tokens": totals["tokens_in"] + totals["tokens_out"],
                     "retries": totals["correction_retries"],
                     "api_retries": totals["api_retries"],
+            "api_attempts": totals["api_attempts"],
                     "generation_ms": totals["generation_ms"],
                     "verification_ms": totals["verification_ms"],
                     "retrieval_setting": RETRIEVAL_SETTING,
@@ -198,6 +233,7 @@ def run_pipeline(question):
         }
 
         # STEP 4B: Verify generated answer
+        emit("citation_verification", "running", correction_attempt=attempt)
         verification_start = time.perf_counter()
 
         try:
@@ -205,14 +241,19 @@ def run_pipeline(question):
         except GroqRequestError as error:
             totals["verification_ms"] += (time.perf_counter() - verification_start) * 1000
             totals["api_retries"] += getattr(error, "retry_count", 0)
+            totals["api_attempts"] += getattr(error, "attempts", 1)
             attempt_records.append(attempt_record)
-            return _api_error_result(error, "verification", start_time, totals)
+            emit("citation_verification", "failed", category=error.category, duration_ms=(time.perf_counter()-verification_start)*1000)
+            return _api_error_result(error, "verification", start_time, totals, configuration)
 
         totals["verification_ms"] += (time.perf_counter() - verification_start) * 1000
         totals["tokens_in"] += verdict.get("tokens_in", 0)
         totals["tokens_out"] += verdict.get("tokens_out", 0)
         totals["api_retries"] += verdict.get("api_retries", 0)
+        totals["api_attempts"] += verdict.get("api_attempts", 1)
 
+        emit("citation_verification", verified=verdict.get("verified"), reason=verdict.get("reason"),
+             duration_ms=(time.perf_counter()-verification_start)*1000, correction_attempt=attempt)
         final_verdict = verdict
         attempt_record["verification"] = {
             "verified": verdict.get("verified", False),
@@ -231,9 +272,12 @@ def run_pipeline(question):
             break
 
         if attempt == 0:
+            emit("verifier_correction", "running", reason=verdict.get("reason"))
             totals["correction_retries"] += 1
             correction = verdict.get("reason", "")
 
+    emit("verifier_correction", "completed" if totals["correction_retries"] else "skipped", verified=verified)
+    emit("final_answer", outcome="ok" if verified else "verification_failed")
     # STEP 5: Final decision
     total_ms = (time.perf_counter() - start_time) * 1000
 
@@ -256,6 +300,7 @@ def run_pipeline(question):
                 "total_tokens": totals["tokens_in"] + totals["tokens_out"],
                 "retries": totals["correction_retries"],
                 "api_retries": totals["api_retries"],
+            "api_attempts": totals["api_attempts"],
                 "generation_ms": totals["generation_ms"],
                 "verification_ms": totals["verification_ms"],
                 "retrieval_setting": RETRIEVAL_SETTING,
@@ -302,6 +347,7 @@ def run_pipeline(question):
             "total_tokens": totals["tokens_in"] + totals["tokens_out"],
             "retries": totals["correction_retries"],
             "api_retries": totals["api_retries"],
+            "api_attempts": totals["api_attempts"],
             "generation_ms": totals["generation_ms"],
             "verification_ms": totals["verification_ms"],
             "retrieval_setting": RETRIEVAL_SETTING,

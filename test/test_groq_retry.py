@@ -35,6 +35,12 @@ def make_status_error(status_code, message, headers=None):
 class GroqRetryPolicyTests(unittest.TestCase):
 
     def setUp(self):
+        raw_response = Mock()
+        raw_response.headers = {}
+        raw_response.parse.side_effect = lambda: groq_client.client.chat.completions.create()
+        patcher = patch.object(groq_client.client.chat.completions.with_raw_response, "create", return_value=raw_response)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.messages = [{"role": "user", "content": "test"}]
         self.success_response = Mock()
         self.success_response.choices = [

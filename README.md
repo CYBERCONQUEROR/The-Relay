@@ -27,6 +27,18 @@
 
 ---
 
+## Persistent queue and testing dashboard (v2)
+
+The application now includes SQLite-backed asynchronous jobs, quota-aware resumption, durable lifecycle events, a React/Vite/TypeScript dashboard, and explicitly budgeted real-provider experiments. Existing R4 retrieval, citations and the one verifier correction remain in the original pipeline.
+
+**Start:** install Python dependencies, run `npm --prefix frontend install` and `npm --prefix frontend run build`, then `uvicorn main:app --host 127.0.0.1 --port 8000`. Open **http://127.0.0.1:8000**. The bounded worker starts with the API by default. Development frontend: `npm --prefix frontend run dev`.
+
+**API change:** `POST /ask` now returns a persistent job and HTTP 202 by default. Poll `GET /jobs/{job_id}`. Send `wait_seconds: 30` to retain the previous synchronous result shape when it completes within that interval. Direct `run_pipeline(question)` evaluation callers are unchanged. `/ask/stream` delivers a job receipt and verified result/deferred state; it does not measure provider token streaming. `/health` checks liveness/SQLite and reports lazy retrieval initialization.
+
+See **[the complete operating guide](docs/RELIABILITY.md)** for architecture, schema, API examples, queue/worker startup, quota reset policy, environment variables, dashboard controls, protected access, bounded load tests and limitations. See **[implementation and validation](docs/IMPLEMENTATION.md)** for files and test results.
+
+Real Groq load tests remain disabled by default. No live provider tests run during startup or automated tests. Existing benchmark tables below describe historical experiments, not measurements of this upgrade. The legacy synchronous API examples later in this README correspond to the inner pipeline result (or `/ask` with `wait_seconds` when completed).
+
 ## Overview
 
 **The Relay** is an enterprise-grade Retrieval-Augmented Generation (RAG) system engineered to provide verifiable, page-level grounded answers across academic machine learning literature. 
@@ -311,7 +323,7 @@ POST /ask/stream
 Content-Type: application/json
 ```
 
-Streams chunked tokens via Server-Sent Events (SSE). Concludes with an event emitting full source citations and telemetry.
+Returns a job receipt via SSE, then a completed verified answer or a deferred job state. Use `/jobs/{job_id}/events?stream=true` for durable lifecycle progress; this is not provider token streaming.
 
 ```bash
 curl -N -X POST "http://127.0.0.1:8000/ask/stream" \
@@ -329,7 +341,8 @@ GET /health
 ```json
 {
   "status": "healthy",
-  "retrieval": "FAISS initialized"
+  "database": "available",
+  "retrieval": "loaded lazily on first request"
 }
 ```
 

@@ -341,10 +341,10 @@ class PaperRetriever:
             reverse=True
         )
 
-        # Keep the original semantic score where available.
-        # BM25-only candidates retain their BM25 score.
+        # Confidence gating must use one comparable scale, including BM25-only hits.
+        query_vector = self.encode_query(query)[0]
         for item in results:
-            item["score"] = float(item["score"])
+            item["score"] = self.cosine_similarity(query_vector, self.index.reconstruct(item["chunk_id"]))
             item["rrf_score"] = float(item["rrf_score"])
 
         return results[:top_k]
